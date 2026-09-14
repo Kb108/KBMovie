@@ -22,13 +22,13 @@ def init_db():
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
-                # টেবিলের নাম পরিবর্তন করে kb_movies দেওয়া হয়েছে যাতে আগের ডাটাবেজের সাথে সমস্যা না হয়
+                # হুবহু মেসেজ কপি করার জন্য নতুন টেবিল তৈরি (যেখানে message_id সেভ হবে)
                 cur.execute('''
-                    CREATE TABLE IF NOT EXISTS kb_movies (
+                    CREATE TABLE IF NOT EXISTS kb_movies_v2 (
                         id SERIAL PRIMARY KEY,
-                        file_name TEXT,
-                        file_id TEXT,
-                        chat_id BIGINT
+                        search_text TEXT,
+                        message_id INTEGER,
+                        channel_id BIGINT
                     )
                 ''')
     except Exception as e:
@@ -60,17 +60,17 @@ async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if message.text or message.caption:
         full_text = message.text or message.caption
-        message_link = message.link if message.link else "No Link Available"
+        msg_id = message.message_id  # মেসেজের আসল আইডি নেওয়া হচ্ছে
+        chat_id = message.chat_id
 
         try:
             with psycopg2.connect(DATABASE_URL) as conn:
                 with conn.cursor() as cur:
-                    # নতুন kb_movies টেবিলে ডাটা সেভ করা হচ্ছে
                     cur.execute(
-                        "INSERT INTO kb_movies (file_name, file_id, chat_id) VALUES (%s, %s, %s)",
-                        (full_text, message_link, message.chat_id)
+                        "INSERT INTO kb_movies_v2 (search_text, message_id, channel_id) VALUES (%s, %s, %s)",
+                        (full_text, msg_id, chat_id)
                     )
-            logger.info("New Post/Link saved successfully!")
+            logger.info(f"Exact Post saved successfully! (Message ID: {msg_id})")
         except Exception as e:
             logger.error(f"Database Save Error: {e}")
 
@@ -84,8 +84,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
-                # নতুন kb_movies টেবিল থেকে খোঁজা হচ্ছে
-                cur.execute("SELECT file_name, file_id FROM kb_movies WHERE file_name ILIKE %s", (f"%{query}%",))
+                cur.execute("SELECT message_id, channel_id FROM kb_movies_v2 WHERE search_text ILIKE %s", (f"%{query}%",))
                 results = cur.fetchall()
 
         try:
@@ -94,16 +93,16 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         if results:
-            for full_text, message_link in results[:3]:
-                title = html.escape(full_text.split('\n')[0][:50])
-                safe_link = html.escape(message_link)
-                
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"🎬 **Found:** {title}...\n\n📥 **Download / Watch Link:**\n{safe_link}\n\n🌟 *Provided by Movie Bot*",
-                    parse_mode="HTML",
-                    disable_web_page_preview=False 
-                )
+            for msg_id, channel_id in results[:3]:  # একসঙ্গে সর্বোচ্চ ৩টি পোস্ট দেবে
+                try:
+                    # প্রাইভেট চ্যানেলের মেসেজটি হুবহু ছবি ও টেক্সটসহ ইউজারকে কপি করে পাঠিয়ে দেবে
+                    await context.bot.copy_message(
+                        chat_id=update.effective_chat.id,
+                        from_chat_id=channel_id,
+                        message_id=msg_id
+                    )
+                except Exception as copy_err:
+                    logger.error(f"Copy Message Error: {copy_err}")
         else:
             encoded_query = urllib.parse.quote(query)
             google_search_url = f"https://www.google.com/search?q={encoded_query}"
@@ -145,7 +144,7 @@ def main():
     application.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID) & (filters.TEXT | filters.CAPTION), save_movie_to_db))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search_movie))
 
-    print("Movie Bot is running with KB Database...")
+    print("Movie Bot is running with Exact Copy Feature...")
     application.run_polling()
 
 if __name__ == "__main__":
