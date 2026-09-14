@@ -54,7 +54,7 @@ async def start_handler(client, message):
         [InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{client.me.username}?startgroup=true")],
         [InlineKeyboardButton("🚀 KB Bot Service", url="https://t.me/KbBotService"), InlineKeyboardButton("🛍️ Loot Deals", url="https://t.me/loot_dells")],
         [InlineKeyboardButton("📥 KB Downloader", url="https://t.me/KBDownloader_bot")],
-        [InlineKeyboardButton("✨ ABOUT", callback_data="about"), InlineKeyboardButton("✨ OWNER", url="https://t.me/your_owner_username")]
+        [InlineKeyboardButton("✨ ABOUT", callback_data="about"), InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService")]
     ])
     
     sent_msg = await message.reply_text(start_text, reply_markup=keyboard)
