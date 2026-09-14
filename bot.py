@@ -1,9 +1,13 @@
 import os
 import asyncio
+import nest_asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 import urllib.parse
+
+# Apply nest_asyncio to prevent event loop issues on hosting platforms
+nest_asyncio.apply()
 
 # Automatically fetch environment variables regardless of case formatting in Railway
 API_ID_RAW = os.getenv("API_ID") or os.getenv("api_id") or os.getenv("App api_id") or "0"
@@ -40,7 +44,7 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start command handler with updated layout
+# Start command handler with the requested button layout and links
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
     user_name = message.from_user.first_name if message.from_user else "User"
