@@ -40,7 +40,7 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start command handler with updated service buttons
+# Start command handler with updated layout
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
     user_name = message.from_user.first_name if message.from_user else "User"
@@ -52,9 +52,9 @@ async def start_handler(client, message):
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{client.me.username}?startgroup=true")],
-        [InlineKeyboardButton("🚀 KB Bot Service", url="https://t.me/KbBotService"), InlineKeyboardButton("🛍️ Loot Deals", url="https://t.me/loot_dells")],
-        [InlineKeyboardButton("📥 KB Downloader", url="https://t.me/KBDownloader_bot")],
-        [InlineKeyboardButton("✨ ABOUT", callback_data="about"), InlineKeyboardButton("✨ OWNER", url="https://t.me/your_owner_username")]
+        [InlineKeyboardButton("🛍️ Loot Deals", url="https://t.me/loot_dells"), InlineKeyboardButton("📥 KB Downloader", url="https://t.me/KBDownloader_bot")],
+        [InlineKeyboardButton("📂 Browse Files", switch_inline_query_current_chat(""))],
+        [InlineKeyboardButton("✨ ABOUT", callback_data="about"), InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService")]
     ])
     
     sent_msg = await message.reply_text(start_text, reply_markup=keyboard)
@@ -72,7 +72,6 @@ async def movie_search_handler(client, message):
     results = search_movies_from_db(query)
     
     if not results:
-        # If movie not found, provide a Google Search button so user can verify the correct spelling
         encoded_query = urllib.parse.quote(query)
         google_url = f"https://www.google.com/search?q={encoded_query}+movie"
         
@@ -90,19 +89,16 @@ async def movie_search_handler(client, message):
 
     for text, msg_id, channel_id in results:
         try:
-            # Send the movie file
             sent_msg = await client.copy_message(
                 chat_id=message.chat.id,
                 from_chat_id=channel_id,
                 message_id=msg_id
             )
             
-            # Send the English warning note right below the movie file
             warning_msg = await message.reply_text(
                 "⚠️ *Note: This file will be automatically deleted in 10 minutes. Please save or forward it!*"
             )
             
-            # Automatically delete the movie file, the warning note, and the user's search message after 10 minutes (600 seconds)
             asyncio.create_task(schedule_message_deletion(sent_msg, 600))
             asyncio.create_task(schedule_message_deletion(warning_msg, 600))
             asyncio.create_task(schedule_message_deletion(message, 600))
@@ -114,7 +110,7 @@ async def movie_search_handler(client, message):
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     if callback_query.data == "about":
-        await callback_query.answer("This is an advanced movie downloading bot with 10-minute auto-delete features and custom service links.", show_alert=True)
+        await callback_query.answer("This is an advanced movie downloading bot with 10-minute auto-delete features.", show_alert=True)
 
 print("🤖 Movie Bot has successfully started with the 10-minute auto-delete system active!")
 app.run()
