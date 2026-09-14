@@ -20,11 +20,11 @@ DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "0"))
 
 def init_db():
     try:
-        # 'with' ব্যবহার করা হয়েছে যাতে কানেকশন লিক না হয়
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
+                # টেবিলের নাম পরিবর্তন করে kb_movies দেওয়া হয়েছে যাতে আগের ডাটাবেজের সাথে সমস্যা না হয়
                 cur.execute('''
-                    CREATE TABLE IF NOT EXISTS movies (
+                    CREATE TABLE IF NOT EXISTS kb_movies (
                         id SERIAL PRIMARY KEY,
                         file_name TEXT,
                         file_id TEXT,
@@ -65,8 +65,9 @@ async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with psycopg2.connect(DATABASE_URL) as conn:
                 with conn.cursor() as cur:
+                    # নতুন kb_movies টেবিলে ডাটা সেভ করা হচ্ছে
                     cur.execute(
-                        "INSERT INTO movies (file_name, file_id, chat_id) VALUES (%s, %s, %s)",
+                        "INSERT INTO kb_movies (file_name, file_id, chat_id) VALUES (%s, %s, %s)",
                         (full_text, message_link, message.chat_id)
                     )
             logger.info("New Post/Link saved successfully!")
@@ -81,10 +82,10 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     searching_msg = await update.message.reply_text("🔍 Searching for the movie...")
 
     try:
-        # ডাটাবেজ থেকে সুরক্ষিতভাবে তথ্য খোঁজা
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT file_name, file_id FROM movies WHERE file_name ILIKE %s", (f"%{query}%",))
+                # নতুন kb_movies টেবিল থেকে খোঁজা হচ্ছে
+                cur.execute("SELECT file_name, file_id FROM kb_movies WHERE file_name ILIKE %s", (f"%{query}%",))
                 results = cur.fetchall()
 
         try:
@@ -94,7 +95,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if results:
             for full_text, message_link in results[:3]:
-                # html.escape ব্যবহার করা হয়েছে যাতে কোনো স্পেশাল ক্যারেক্টার বটকে ক্রাশ না করায়
                 title = html.escape(full_text.split('\n')[0][:50])
                 safe_link = html.escape(message_link)
                 
@@ -131,7 +131,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🌐 Search on Google", url=google_search_url)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # যদি কোনো এরর আসে, তবে ঠিক কী এরর হয়েছে তা মেসেজেই দেখিয়ে দেবে
         await update.message.reply_text(
             f"⚠️ **System Error:** `{html.escape(str(e))}`\n\n"
             "An internal error occurred. You can search for it on Google using the button below:",
@@ -146,7 +145,7 @@ def main():
     application.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID) & (filters.TEXT | filters.CAPTION), save_movie_to_db))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search_movie))
 
-    print("Movie Bot is running with Advanced Security...")
+    print("Movie Bot is running with KB Database...")
     application.run_polling()
 
 if __name__ == "__main__":
