@@ -117,8 +117,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as copy_err:
                     logger.error(f"Copy Message Error: {copy_err}")
             
-            # ইউজারকে একটি ওয়ার্নিং মেসেজ দেওয়া (যাতে সে বুঝতে পারে ডিলিট হয়ে যাবে)
-            warning_msg = await update.message.reply_text("⚠️ *উপরের মুভিটি ১০ মিনিট পর অটোমেটিক ডিলিট হয়ে যাবে!*", parse_mode="HTML")
+            # ইউজারকে ওয়ার্নিং মেসেজ দেওয়া (ইংলিশে আপডেট করা হয়েছে)
+            warning_msg = await update.message.reply_text("⚠️ *This movie will be automatically deleted in 10 minutes!*", parse_mode="HTML")
+            
             # এই ওয়ার্নিং মেসেজটিও ১০ মিনিট পর ডিলিট হবে
             asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, warning_msg.message_id, 600))
 
@@ -135,7 +136,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode="HTML"
             )
-            # মুভি না পাওয়ার মেসেজটিও ২ মিনিট পর ডিলিট হয়ে যাবে (গ্রুপ পরিষ্কার রাখার জন্য)
+            # মুভি না পাওয়ার মেসেজটিও ২ মিনিট পর ডিলিট হয়ে যাবে
             asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, not_found_msg.message_id, 120))
 
     except Exception as e:
@@ -157,7 +158,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
-        # এরর মেসেজটিও ২ মিনিট পর ডিলিট হয়ে যাবে
         asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, error_msg.message_id, 120))
 
 def main():
