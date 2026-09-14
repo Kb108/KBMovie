@@ -1,9 +1,8 @@
 import os
-import re
 import logging
 import asyncpg
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -16,63 +15,63 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 
 logger = logging.getLogger(__name__)
 
-db_pool = None
+db = None
 
 
 async def init_database():
-    global db_pool
+    global db
 
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing")
+    db = await asyncpg.create_pool(DATABASE_URL)
 
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is missing")
-
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
-
-    async with db_pool.acquire() as conn:
+    async with db.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS content (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
-                link TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                channel_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL
             )
         """)
 
     logger.info("DATABASE CONNECTED")
 
 
-async def save_content(name, link):
-    async with db_pool.acquire() as conn:
+async def save_content(name, channel_id, message_id):
+    async with db.acquire() as conn:
         await conn.execute("""
-            INSERT INTO content (name, link)
-            VALUES ($1, $2)
+            INSERT INTO content
+                (name, channel_id, message_id)
+            VALUES
+                ($1, $2, $3)
             ON CONFLICT (name)
-            DO UPDATE SET link = EXCLUDED.link
-        """, name, link)
+            DO UPDATE SET
+                channel_id = EXCLUDED.channel_id,
+                message_id = EXCLUDED.message_id
+        """, name, channel_id, message_id)
 
-    logger.info("CONTENT SAVED: %s", name)
+    logger.info("SAVED: %s", name)
 
 
-async def search_content(query):
-    async with db_pool.acquire() as conn:
+async def find_content(query):
+    async with db.acquire() as conn:
         return await conn.fetch("""
-            SELECT id, name, link
+            SELECT name, channel_id, message_id
             FROM content
             WHERE name ILIKE $1
-            ORDER BY name
-            LIMIT 10
+            LIMIT 1
         """, f"%{query}%")
 
 
-async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def channel_post(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     post = update.channel_post
 
@@ -81,15 +80,10 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = post.text or post.caption or ""
 
-    logger.info("CHANNEL POST RECEIVED: %s", text)
-
-    urls = re.findall(r"https?://[^\s]+", text)
-
-    if not urls:
-        logger.warning("CHANNEL POST HAS NO URL")
+    if not text:
         return
 
-    link = urls[0].rstrip(".,)")
+    logger.info("CHANNEL POST: %s", text)
 
     lines = [
         line.strip()
@@ -100,114 +94,112 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lines:
         return
 
+    # First line is treated as the content name
     name = lines[0]
 
-    await save_content(name, link)
+    await save_content(
+        name,
+        post.chat_id,
+        post.message_id
+    )
 
 
-async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_original_post(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
 
-    if not update.message.text:
-        return
-
     query = update.message.text.strip()
 
-    if not query:
+    if len(query) < 2:
         return
 
-    logger.info(
-        "GROUP MESSAGE RECEIVED: chat=%s text=%s",
-        update.message.chat_id,
-        query,
-    )
+    logger.info("SEARCH: %s", query)
 
-    results = await search_content(query)
+    results = await find_content(query)
 
     if not results:
-        logger.info("NO MATCH FOUND: %s", query)
+        logger.info("NO RESULT: %s", query)
         return
 
-    logger.info("MATCH FOUND: %s", query)
+    item = results[0]
 
-    for item in results:
+    try:
 
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "📥 Get Link",
-                    url=item["link"]
-                )
-            ]
-        ])
-
-        sent_message = await update.message.reply_text(
-            f"🎬 <b>{item['name']}</b>\n\n"
-            f"📥 Click the button below to open the link.",
-            parse_mode="HTML",
-            reply_markup=keyboard
+        copied = await context.bot.copy_message(
+            chat_id=update.message.chat_id,
+            from_chat_id=item["channel_id"],
+            message_id=item["message_id"]
         )
 
-        # Delete the bot reply after 10 minutes
+        logger.info("ORIGINAL POST COPIED")
+
+        # Delete copied post after 10 minutes
         if context.job_queue:
 
             context.job_queue.run_once(
-                delete_message,
+                delete_copied_post,
                 600,
                 data={
-                    "chat_id": sent_message.chat_id,
-                    "message_id": sent_message.message_id,
+                    "chat_id": copied.chat_id,
+                    "message_id": copied.message_id
                 }
             )
 
-        break
+    except Exception as e:
+
+        logger.error(
+            "COPY ERROR: %s",
+            e
+        )
 
 
-async def delete_message(context: ContextTypes.DEFAULT_TYPE):
+async def delete_copied_post(
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     data = context.job.data
 
     try:
+
         await context.bot.delete_message(
             chat_id=data["chat_id"],
             message_id=data["message_id"]
         )
 
-        logger.info(
-            "MESSAGE DELETED: chat=%s message=%s",
-            data["chat_id"],
-            data["message_id"]
-        )
+        logger.info("COPIED POST DELETED")
 
     except Exception as e:
-        logger.error("DELETE ERROR: %s", e)
+
+        logger.error(
+            "DELETE ERROR: %s",
+            e
+        )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "👋 Welcome!\n\n"
-        "Send a content name to search."
+        "Send the content name to search."
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "📖 How to use\n\n"
         "Simply send the content name.\n"
-        "If a matching result exists, I will show it."
-    )
-
-
-async def error_handler(update, context):
-
-    logger.error(
-        "BOT ERROR: %s",
-        context.error,
-        exc_info=True
+        "If it is available, I will send the original post."
     )
 
 
@@ -215,7 +207,7 @@ async def post_init(application):
 
     await init_database()
 
-    logger.info("BOT STARTED SUCCESSFULLY")
+    logger.info("BOT STARTED")
 
 
 def main():
@@ -235,25 +227,33 @@ def main():
         CommandHandler("help", help_command)
     )
 
-    # Normal messages from groups/supergroups
+    # Group messages
     application.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS
             & filters.TEXT
             & ~filters.COMMAND,
-            group_message
+            send_original_post
         )
     )
 
-    # New posts from channels
+    # Private chat messages
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE
+            & filters.TEXT
+            & ~filters.COMMAND,
+            send_original_post
+        )
+    )
+
+    # Channel posts
     application.add_handler(
         MessageHandler(
             filters.ChatType.CHANNEL,
             channel_post
         )
     )
-
-    application.add_error_handler(error_handler)
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
