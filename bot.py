@@ -2,20 +2,14 @@ import os
 import re
 import asyncpg
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.constants import ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
+    MessageHandler,
     ContextTypes,
-    InlineQueryHandler,
+    filters,
 )
-from telegram import InlineQueryResultArticle, InputTextMessageContent
-
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -30,7 +24,7 @@ async def init_database():
 
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS movies (
+            CREATE TABLE IF NOT EXISTS content (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
                 link TEXT NOT NULL,
@@ -39,29 +33,28 @@ async def init_database():
         """)
 
 
-async def save_movie(name, link):
+async def save_content(name, link):
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO movies (name, link)
+            INSERT INTO content (name, link)
             VALUES ($1, $2)
             ON CONFLICT (name)
             DO UPDATE SET link = EXCLUDED.link
         """, name, link)
 
 
-async def search_movies(query):
+async def find_content(query):
     async with db_pool.acquire() as conn:
         return await conn.fetch("""
             SELECT name, link
-            FROM movies
+            FROM content
             WHERE name ILIKE $1
             ORDER BY name
-            LIMIT 10
+            LIMIT 5
         """, f"%{query}%")
 
 
 async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     post = update.channel_post
 
     if not post:
@@ -87,78 +80,80 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     name = lines[0]
 
-    await save_movie(name, link)
+    await save_content(name, link)
 
 
-async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.inline_query.query.strip()
-
-    if not query:
+async def group_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
         return
 
-    results = await search_movies(query)
+    query = update.message.text.strip()
 
-    articles = []
+    if len(query) < 2:
+        return
 
-    for movie in results:
+    results = await find_content(query)
+
+    if not results:
+        return
+
+    for item in results:
 
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
                     "📥 Get Link",
-                    url=movie["link"]
+                    url=item["link"]
                 )
             ]
         ])
 
-        message = (
-            f"🎬 <b>{movie['name']}</b>\n\n"
-            f"Click the button below to open the link."
-        )
-
-        article = InlineQueryResultArticle(
-            id=str(movie["id"]),
-            title=movie["name"],
-            description="Get the available link",
-            input_message_content=InputTextMessageContent(
-                message,
-                parse_mode=ParseMode.HTML
-            ),
+        sent = await update.message.reply_text(
+            f"🎬 <b>{item['name']}</b>\n\n"
+            f"📥 Click the button below to open the link.",
+            parse_mode="HTML",
             reply_markup=keyboard
         )
 
-        articles.append(article)
+        # Automatically delete bot reply after 10 minutes
+        context.job_queue.run_once(
+            delete_bot_message,
+            600,
+            data={
+                "chat_id": sent.chat_id,
+                "message_id": sent.message_id
+            }
+        )
 
-    await update.inline_query.answer(
-        articles,
-        cache_time=5,
-        is_personal=True
-    )
+
+async def delete_bot_message(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data
+
+    try:
+        await context.bot.delete_message(
+            chat_id=data["chat_id"],
+            message_id=data["message_id"]
+        )
+    except Exception:
+        pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
         "👋 Welcome!\n\n"
-        "Search from the bot's database using:\n\n"
-        "@YourBot Movie Name"
+        "Send the content name in a group to search."
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
-        "📖 How to use this bot\n\n"
-        "1. Open any Telegram group.\n"
-        "2. Type @YourBot followed by the content name.\n"
-        "3. Select a result.\n"
-        "4. Press Get Link."
+        "📖 How to use\n\n"
+        "Simply type the content name in the group.\n"
+        "If it is available, I will show the matching result."
     )
 
 
 async def post_init(application):
-
     await init_database()
 
 
@@ -180,7 +175,17 @@ def main():
     )
 
     application.add_handler(
-        InlineQueryHandler(inline_search)
+        MessageHandler(
+            filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
+            group_search
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.CHANNEL,
+            channel_post
+        )
     )
 
     application.run_polling(
