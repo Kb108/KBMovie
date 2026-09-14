@@ -6,10 +6,10 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 import urllib.parse
 
-# Apply nest_asyncio to prevent event loop crashes on cloud hosting
+# Apply nest_asyncio to prevent event loop issues
 nest_asyncio.apply()
 
-# Safely fetch and validate environment variables
+# Safely fetch environment variables
 API_ID_RAW = os.getenv("API_ID") or os.getenv("api_id") or os.getenv("App api_id") or "0"
 try:
     API_ID = int(API_ID_RAW)
@@ -20,20 +20,18 @@ API_HASH = os.getenv("API_HASH") or os.getenv("api_hash") or os.getenv("App api_
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("token") or os.getenv("TOKEN") or ""
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("database_url") or ""
 
-if not BOT_TOKEN or API_ID == 0 or not API_HASH:
-    print("CRITICAL ERROR: Telegram API_ID, API_HASH, or BOT_TOKEN is missing or invalid!")
-
+# in_memory=True ensures cloud hosting stability without session file writing errors
 app = Client(
     "kb_movie_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True
 )
 
 # Function to search movies from the PostgreSQL database safely
 def search_movies_from_db(query):
     if not DATABASE_URL:
-        print("Database URL is missing.")
         return []
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -50,7 +48,7 @@ def search_movies_from_db(query):
         print(f"Database Search Error: {e}")
         return []
 
-# Background task to handle 10-minute (600 seconds) automatic message deletion safely
+# Background task to handle 10-minute (600 seconds) automatic message deletion
 async def schedule_message_deletion(message, delay_seconds=600):
     await asyncio.sleep(delay_seconds)
     try:
@@ -58,7 +56,7 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start command handler with safe execution
+# Start command handler with exact button layout
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
     try:
@@ -83,7 +81,7 @@ async def start_handler(client, message):
     except Exception as e:
         print(f"Start handler error: {e}")
 
-# Movie search and delivery handler with safe error handling
+# Movie search and delivery handler
 @app.on_message(filters.text & ~filters.command(["start"]))
 async def movie_search_handler(client, message):
     try:
@@ -140,5 +138,5 @@ async def callback_handler(client, callback_query):
         print(f"Callback error: {e}")
 
 if __name__ == "__main__":
-    print("🤖 Movie Bot has successfully started with bulletproof configuration!")
+    print("🤖 Movie Bot has successfully started!")
     app.run()
