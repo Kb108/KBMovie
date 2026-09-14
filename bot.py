@@ -1,5 +1,7 @@
 import os
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import nest_asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,6 +10,23 @@ import urllib.parse
 
 # Apply nest_asyncio to prevent event loop issues
 nest_asyncio.apply()
+
+# Dummy web server to satisfy Railway's port requirement and prevent container shutdown
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running successfully!")
+    def log_message(self, format, *args):
+        pass
+
+def run_web_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# Start the web server in a background thread
+threading.Thread(target=run_web_server, daemon=True).start()
 
 # Safely fetch environment variables
 API_ID_RAW = os.getenv("API_ID") or os.getenv("api_id") or os.getenv("App api_id") or "0"
@@ -55,7 +74,7 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start command handler (case_sensitive=False allows both /start and /Start)
+# Start command handler (supports both /start and /Start)
 @app.on_message(filters.command("start", case_sensitive=False))
 async def start_handler(client, message):
     try:
@@ -137,5 +156,5 @@ async def callback_handler(client, callback_query):
         print(f"Callback error: {e}")
 
 if __name__ == "__main__":
-    print("🤖 Movie Bot has successfully started!")
+    print("🤖 Movie Bot has successfully started with web server enabled!")
     app.run()
