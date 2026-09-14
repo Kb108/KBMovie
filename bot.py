@@ -11,8 +11,19 @@ from telegram.ext import (
     filters,
 )
 
+# =========================================================
+# SETTINGS
+# =========================================================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+DELETE_AFTER_SECONDS = 600  # 10 minutes
+
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -24,49 +35,167 @@ logger = logging.getLogger(__name__)
 db = None
 
 
+# =========================================================
+# DATABASE
+# =========================================================
+
 async def init_database():
+
     global db
 
-    db = await asyncpg.create_pool(DATABASE_URL)
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is missing")
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is missing")
+
+    db = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=5
+    )
 
     async with db.acquire() as conn:
+
+        # Create table if it does not exist
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS content (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
-                channel_id BIGINT NOT NULL,
-                message_id BIGINT NOT NULL
+                link TEXT,
+                channel_id BIGINT,
+                message_id BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+
+        # Fix old database structure
+        await conn.execute("""
+            ALTER TABLE content
+            ADD COLUMN IF NOT EXISTS link TEXT
+        """)
+
+        await conn.execute("""
+            ALTER TABLE content
+            ADD COLUMN IF NOT EXISTS channel_id BIGINT
+        """)
+
+        await conn.execute("""
+            ALTER TABLE content
+            ADD COLUMN IF NOT EXISTS message_id BIGINT
+        """)
+
+        await conn.execute("""
+            ALTER TABLE content
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMP
+            DEFAULT CURRENT_TIMESTAMP
         """)
 
     logger.info("DATABASE CONNECTED")
 
 
-async def save_content(name, channel_id, message_id):
+# =========================================================
+# SAVE CHANNEL POST
+# =========================================================
+
+async def save_channel_post(
+    name,
+    channel_id,
+    message_id
+):
+
     async with db.acquire() as conn:
+
         await conn.execute("""
             INSERT INTO content
                 (name, channel_id, message_id)
             VALUES
                 ($1, $2, $3)
+
             ON CONFLICT (name)
             DO UPDATE SET
                 channel_id = EXCLUDED.channel_id,
                 message_id = EXCLUDED.message_id
-        """, name, channel_id, message_id)
+        """,
+        name,
+        channel_id,
+        message_id)
 
-    logger.info("SAVED: %s", name)
+    logger.info(
+        "CONTENT SAVED: %s | channel=%s | message=%s",
+        name,
+        channel_id,
+        message_id
+    )
 
 
-async def find_content(query):
+# =========================================================
+# SEARCH DATABASE
+# =========================================================
+
+async def search_content(query):
+
     async with db.acquire() as conn:
-        return await conn.fetch("""
-            SELECT name, channel_id, message_id
+
+        results = await conn.fetch("""
+            SELECT
+                name,
+                channel_id,
+                message_id
             FROM content
             WHERE name ILIKE $1
-            LIMIT 1
+            ORDER BY
+                LENGTH(name) ASC
+            LIMIT 5
         """, f"%{query}%")
 
+    return results
+
+
+# =========================================================
+# GET CONTENT NAME FROM CHANNEL POST
+# =========================================================
+
+def get_content_name(post):
+
+    text = post.text or post.caption or ""
+
+    if not text:
+        return None
+
+    lines = []
+
+    for line in text.splitlines():
+
+        line = line.strip()
+
+        if line:
+            lines.append(line)
+
+    if not lines:
+        return None
+
+    # First non-empty line is used as the searchable name
+    name = lines[0]
+
+    # Remove common decorative characters
+    name = name.strip("🎬🎥🍿📺⭐️🔥✅❌")
+
+    name = name.strip()
+
+    if len(name) < 2:
+        return None
+
+    # Keep database name reasonably short
+    if len(name) > 200:
+        name = name[:200].strip()
+
+    return name
+
+
+# =========================================================
+# CHANNEL POST HANDLER
+# =========================================================
 
 async def channel_post(
     update: Update,
@@ -78,33 +207,34 @@ async def channel_post(
     if not post:
         return
 
-    text = post.text or post.caption or ""
-
-    if not text:
-        return
-
-    logger.info("CHANNEL POST: %s", text)
-
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip()
-    ]
-
-    if not lines:
-        return
-
-    # First line is treated as the content name
-    name = lines[0]
-
-    await save_content(
-        name,
+    logger.info(
+        "CHANNEL POST RECEIVED: channel=%s message=%s",
         post.chat_id,
         post.message_id
     )
 
+    name = get_content_name(post)
 
-async def send_original_post(
+    if not name:
+
+        logger.warning(
+            "CHANNEL POST HAS NO SEARCHABLE NAME"
+        )
+
+        return
+
+    await save_channel_post(
+        name=name,
+        channel_id=post.chat_id,
+        message_id=post.message_id
+    )
+
+
+# =========================================================
+# SEARCH HANDLER
+# =========================================================
+
+async def search_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -112,73 +242,120 @@ async def send_original_post(
     if not update.message:
         return
 
+    if not update.message.text:
+        return
+
     query = update.message.text.strip()
 
     if len(query) < 2:
         return
 
-    logger.info("SEARCH: %s", query)
+    logger.info(
+        "SEARCH RECEIVED: %s | chat=%s",
+        query,
+        update.message.chat_id
+    )
 
-    results = await find_content(query)
+    results = await search_content(query)
 
     if not results:
-        logger.info("NO RESULT: %s", query)
+
+        logger.info(
+            "NO MATCH FOUND: %s",
+            query
+        )
+
         return
 
+    # Send first matching original post
     item = results[0]
+
+    if not item["channel_id"] or not item["message_id"]:
+
+        logger.warning(
+            "DATABASE ENTRY HAS NO CHANNEL/MESSAGE ID: %s",
+            item["name"]
+        )
+
+        await update.message.reply_text(
+            "Sorry, this content is currently unavailable."
+        )
+
+        return
 
     try:
 
-        copied = await context.bot.copy_message(
+        copied_message = await context.bot.copy_message(
             chat_id=update.message.chat_id,
             from_chat_id=item["channel_id"],
             message_id=item["message_id"]
         )
 
-        logger.info("ORIGINAL POST COPIED")
+        logger.info(
+            "ORIGINAL POST COPIED: %s",
+            item["name"]
+        )
 
-        # Delete copied post after 10 minutes
+        # Schedule deletion after 10 minutes
         if context.job_queue:
 
             context.job_queue.run_once(
-                delete_copied_post,
-                600,
+                delete_copied_message,
+                DELETE_AFTER_SECONDS,
                 data={
-                    "chat_id": copied.chat_id,
-                    "message_id": copied.message_id
+                    "chat_id": copied_message.chat_id,
+                    "message_id": copied_message.message_id
                 }
             )
 
-    except Exception as e:
+    except Exception as error:
 
-        logger.error(
-            "COPY ERROR: %s",
-            e
+        logger.exception(
+            "COPY MESSAGE ERROR: %s",
+            error
+        )
+
+        await update.message.reply_text(
+            "Sorry, I could not send this content right now."
         )
 
 
-async def delete_copied_post(
+# =========================================================
+# DELETE COPIED MESSAGE
+# =========================================================
+
+async def delete_copied_message(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     data = context.job.data
 
+    chat_id = data["chat_id"]
+    message_id = data["message_id"]
+
     try:
 
         await context.bot.delete_message(
-            chat_id=data["chat_id"],
-            message_id=data["message_id"]
+            chat_id=chat_id,
+            message_id=message_id
         )
 
-        logger.info("COPIED POST DELETED")
-
-    except Exception as e:
-
-        logger.error(
-            "DELETE ERROR: %s",
-            e
+        logger.info(
+            "COPIED MESSAGE DELETED: %s",
+            message_id
         )
 
+    except Exception as error:
+
+        logger.warning(
+            "DELETE MESSAGE ERROR: %s",
+            error
+        )
+
+
+# =========================================================
+# START
+# =========================================================
 
 async def start(
     update: Update,
@@ -191,6 +368,10 @@ async def start(
     )
 
 
+# =========================================================
+# HELP
+# =========================================================
+
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -198,19 +379,57 @@ async def help_command(
 
     await update.message.reply_text(
         "📖 How to use\n\n"
-        "Simply send the content name.\n"
-        "If it is available, I will send the original post."
+        "Simply send the content name.\n\n"
+        "Example:\n"
+        "Demo Video"
     )
 
 
-async def post_init(application):
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    logger.exception(
+        "BOT ERROR:",
+        exc_info=context.error
+    )
+
+
+# =========================================================
+# BOT STARTUP
+# =========================================================
+
+async def post_init(
+    application: Application
+):
 
     await init_database()
 
-    logger.info("BOT STARTED")
+    logger.info(
+        "BOT STARTED SUCCESSFULLY"
+    )
 
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
+
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing"
+        )
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is missing"
+        )
 
     application = (
         Application.builder()
@@ -219,35 +438,52 @@ def main():
         .build()
     )
 
+    # /start
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
+    # /help
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command
+        )
     )
 
-    # Group messages
+    # =====================================================
+    # GROUP SEARCH
+    # =====================================================
+
     application.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS
             & filters.TEXT
             & ~filters.COMMAND,
-            send_original_post
+            search_handler
         )
     )
 
-    # Private chat messages
+    # =====================================================
+    # PRIVATE BOT SEARCH
+    # =====================================================
+
     application.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE
             & filters.TEXT
             & ~filters.COMMAND,
-            send_original_post
+            search_handler
         )
     )
 
-    # Channel posts
+    # =====================================================
+    # PRIVATE CHANNEL POSTS
+    # =====================================================
+
     application.add_handler(
         MessageHandler(
             filters.ChatType.CHANNEL,
@@ -255,10 +491,23 @@ def main():
         )
     )
 
+    # Error handler
+    application.add_error_handler(
+        error_handler
+    )
+
+    logger.info(
+        "STARTING TELEGRAM BOT..."
+    )
+
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
     main()
