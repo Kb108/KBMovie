@@ -4,15 +4,15 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 
-# Retrieve environment variables from Railway
-API_ID = int(os.getenv("API_ID", "12806494"))
-API_HASH = os.getenv("API_HASH", "e0e7832c9d7b4150b3e9940aa3a9ee8c")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Load environment variables from Railway
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 app = Client("kb_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Function to search movies from the database
+# Function to query movies from the PostgreSQL database
 def search_movies_from_db(query):
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -29,7 +29,7 @@ def search_movies_from_db(query):
         print(f"Database Search Error: {e}")
         return []
 
-# Background function to automatically delete messages after 10 minutes (600 seconds)
+# Background task to handle 10-minute (600 seconds) automatic deletion
 async def schedule_message_deletion(message, delay_seconds=600):
     await asyncio.sleep(delay_seconds)
     try:
@@ -37,25 +37,21 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start menu and homepage handler
+# Start command handler
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
     start_text = (
-        "👋 **Welcome to our Movie Bot!**\n\n"
-        "You can easily find your favorite movies through this bot. "
-        "Please choose an option below:"
+        "👋 **Welcome to the Movie Bot!**\n\n"
+        "Send any movie name to search and receive your files instantly.\n"
+        "ℹ️ *Note: All queries and bot responses are automatically deleted after 10 minutes.*"
     )
+    sent_msg = await message.reply_text(start_text)
     
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 Search Movies", switch_inline_query_current_chat("")),
-         InlineKeyboardButton("ℹ️ About", callback_data="about")],
-        [InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{client.me.username}?startgroup=true"),
-         InlineKeyboardButton("🆘 Help", callback_data="help")]
-    ])
-    
-    sent_msg = await message.reply_text(start_text, reply_markup=keyboard)
+    # Auto-delete the start greeting and user command after 10 minutes
+    asyncio.create_task(schedule_message_deletion(sent_msg, 600))
+    asyncio.create_task(schedule_message_deletion(message, 600))
 
-# Inline or regular text search handler for movies
+# Movie search and delivery handler
 @app.on_message(filters.text & ~filters.command(["start"]))
 async def movie_search_handler(client, message):
     query = message.text.strip()
@@ -78,21 +74,12 @@ async def movie_search_handler(client, message):
                 message_id=msg_id
             )
             
-            # Automatically delete both the movie file and the user's search message after 10 minutes (600 seconds)
+            # Exactly 10 minutes (600 seconds) auto-delete timer for both bot response and user query
             asyncio.create_task(schedule_message_deletion(sent_msg, 600))
             asyncio.create_task(schedule_message_deletion(message, 600))
             
         except Exception as e:
             print(f"Error copying message: {e}")
 
-# Callback query handler for About & Help buttons
-@app.on_callback_query()
-async def callback_handler(client, callback_query):
-    data = callback_query.data
-    if data == "about":
-        await callback_query.answer("This bot helps you find any movie easily.", show_alert=True)
-    elif data == "help":
-        await callback_query.answer("Simply send a movie name to get the file link.", show_alert=True)
-
-print("🤖 Movie Bot has successfully started with the auto-delete system active!")
+print("🤖 Movie Bot has successfully started with the 10-minute auto-delete system active!")
 app.run()
