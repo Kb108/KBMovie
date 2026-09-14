@@ -20,7 +20,6 @@ API_HASH = os.getenv("API_HASH") or os.getenv("api_hash") or os.getenv("App api_
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("token") or os.getenv("TOKEN") or ""
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("database_url") or ""
 
-# in_memory=True ensures cloud hosting stability without session file writing errors
 app = Client(
     "kb_movie_bot",
     api_id=API_ID,
@@ -56,8 +55,8 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# Start command handler with exact button layout
-@app.on_message(filters.command("start"))
+# Start command handler (case_sensitive=False allows both /start and /Start)
+@app.on_message(filters.command("start", case_sensitive=False))
 async def start_handler(client, message):
     try:
         user_name = message.from_user.first_name if message.from_user else "User"
