@@ -5,7 +5,7 @@ import html
 import asyncio
 import psycopg2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 # Logging Setup
 logging.basicConfig(
@@ -47,20 +47,74 @@ async def auto_delete_message(bot, chat_id, message_id, delay):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
+    bot_user = context.bot.username  # আপনার বটের ইউজারনেম অটোমেটিক নিয়ে গ্রুপে অ্যাড করার লিংক তৈরি করবে
     
+    # স্ক্রিনশটের মতো সাজানো বাটনগুলো (Inline Keyboards)
     keyboard = [
-        [InlineKeyboardButton("🎁 Join Loot Deals", url="https://t.me/loot_dells")],
-        [InlineKeyboardButton("🤖 Join KB Bot Service", url="https://t.me/KbBotService")]
+        [
+            InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{bot_user}?startgroup=true")
+        ],
+        [
+            InlineKeyboardButton("✨ MOVIE GROUP", url="https://t.me/loot_dells"), # এখানে আপনার মুভি গ্রুপের লিংক দিতে পারেন
+            InlineKeyboardButton("✨ ABOUT", callback_data="about_btn")
+        ],
+        [
+            InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService") # এখানে আপনার বা ওনারের লিংক
+        ],
+        [
+            InlineKeyboardButton("✨ JOIN UPDATE CHANNEL", url="https://t.me/KbBotService")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     welcome_text = (
-        f"👋 Hello, **{html.escape(user_name)}**!\n\n"
-        "Welcome to the **Movie Search Bot** 🎬.\n"
-        "Just type the name of the movie you are looking for, and I will find it for you instantly.\n\n"
-        "👇 **Please join our official channels below:**"
+        f"👋 Hello **{html.escape(user_name)}** 👋,\n\n"
+        "**I AM LATEST ADVANCED AND POWERFUL MOVIE DOWNLOADING BOT.. YOU CAN USE ME TO DOWNLOAD YOUR MOVIES...**\n\n"
+        "👇 *Choose an option below or just type any movie name to search!*"
     )
-    await update.message.reply_text(text=welcome_text, reply_markup=reply_markup, parse_mode="HTML")
+    
+    # যদি স্টার্ট কমান্ড ইনবক্সে দেয়, তবে ছবি বা সুন্দর টেক্সট সহ হোমপেজ পাঠাবে
+    await update.message.reply_text(
+        text=welcome_text,
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+# এবাউট (About) বাটনে ক্লিক করলে যে তথ্য দেখাবে
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "about_btn":
+        about_text = (
+            "🤖 **About This Bot:**\n\n"
+            "This is an advanced Auto-Filter Movie Bot powered by KB Bot Service.\n"
+            "It helps you to find and download your favorite movies instantly with Terabox links!\n\n"
+            "🌟 *Maintained by KB Bot Service.*"
+        )
+        keyboard = [[InlineKeyboardButton("« Back to Home", callback_data="home_btn")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text=about_text, reply_markup=reply_markup, parse_mode="HTML")
+    
+    elif query.data == "home_btn":
+        user_name = update.effective_user.first_name
+        bot_user = context.bot.username
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{bot_user}?startgroup=true")],
+            [InlineKeyboardButton("✨ MOVIE GROUP", url="https://t.me/loot_dells"), InlineKeyboardButton("✨ ABOUT", callback_data="about_btn")],
+            [InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService")],
+            [InlineKeyboardButton("✨ JOIN UPDATE CHANNEL", url="https://t.me/KbBotService")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        welcome_text = (
+            f"👋 Hello **{html.escape(user_name)}** 👋,\n\n"
+            "**I AM LATEST ADVANCED AND POWERFUL MOVIE DOWNLOADING BOT.. YOU CAN USE ME TO DOWNLOAD YOUR MOVIES...**\n\n"
+            "👇 *Choose an option below or just type any movie name to search!*"
+        )
+        await query.edit_message_text(text=welcome_text, reply_markup=reply_markup, parse_mode="HTML")
 
 async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.channel_post or update.effective_message
@@ -104,23 +158,16 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if results:
             for msg_id, channel_id in results[:3]:  
                 try:
-                    # প্রাইভেট চ্যানেলের মেসেজটি হুবহু কপি করে পাঠানো
                     sent_msg = await context.bot.copy_message(
                         chat_id=update.effective_chat.id,
                         from_chat_id=channel_id,
                         message_id=msg_id
                     )
-                    
-                    # 600 সেকেন্ড (১০ মিনিট) পর মুভি ডিলিট করার টাইমার সেট করা
                     asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, sent_msg.message_id, 600))
-                    
                 except Exception as copy_err:
                     logger.error(f"Copy Message Error: {copy_err}")
             
-            # ইউজারকে ওয়ার্নিং মেসেজ দেওয়া (ইংলিশে আপডেট করা হয়েছে)
             warning_msg = await update.message.reply_text("⚠️ *This movie will be automatically deleted in 10 minutes!*", parse_mode="HTML")
-            
-            # এই ওয়ার্নিং মেসেজটিও ১০ মিনিট পর ডিলিট হবে
             asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, warning_msg.message_id, 600))
 
         else:
@@ -136,7 +183,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode="HTML"
             )
-            # মুভি না পাওয়ার মেসেজটিও ২ মিনিট পর ডিলিট হয়ে যাবে
             asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, not_found_msg.message_id, 120))
 
     except Exception as e:
@@ -164,10 +210,11 @@ def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CallbackQueryHandler(button_handler)) # বাটন ক্লিক হ্যান্ডেল করার জন্য
     application.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID) & (filters.TEXT | filters.CAPTION), save_movie_to_db))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search_movie))
 
-    print("Movie Bot is running with Auto-Delete Feature...")
+    print("Movie Bot is running with Pro Homepage...")
     application.run_polling()
 
 if __name__ == "__main__":
