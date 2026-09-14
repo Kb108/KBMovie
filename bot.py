@@ -4,7 +4,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 
-# Railway থেকে যেকোনো ফরম্যাটের ভেরিয়েবল স্বয়ংক্রিয়ভাবে লুফে নেওয়ার ব্যবস্থা
+# Automatically fetch environment variables regardless of case formatting in Railway
 API_ID_RAW = os.getenv("API_ID") or os.getenv("api_id") or os.getenv("App api_id") or "0"
 API_ID = int(API_ID_RAW) if str(API_ID_RAW).isdigit() else 0
 
@@ -14,7 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("database_url") or ""
 
 app = Client("kb_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ডাটাবেজ থেকে মুভি খোঁজার ফাংশন
+# Function to search movies from the PostgreSQL database
 def search_movies_from_db(query):
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -31,7 +31,7 @@ def search_movies_from_db(query):
         print(f"Database Search Error: {e}")
         return []
 
-# ১০ মিনিট (৬০০ সেকেন্ড) পর মেসেজ ডিলিট করার ব্যাকগ্রাউন্ড টাস্ক
+# Background task to handle 10-minute (600 seconds) automatic message deletion
 async def schedule_message_deletion(message, delay_seconds=600):
     await asyncio.sleep(delay_seconds)
     try:
@@ -39,20 +39,31 @@ async def schedule_message_deletion(message, delay_seconds=600):
     except Exception as e:
         print(f"Auto-delete error: {e}")
 
-# স্টার্ট কমান্ড হ্যান্ডলার
+# Start command handler with the exact requested button layout
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
+    user_name = message.from_user.first_name if message.from_user else "User"
     start_text = (
-        "👋 **স্বাগতম আমাদের মুভি বটে!**\n\n"
-        "যেকোনো মুভির নাম লিখে পাঠান এবং মুহূর্তেই ফাইল পেয়ে যান।\n"
-        "ℹ️ *নোট: ইউজার ও বটের পাঠানো সমস্ত মেসেজ ১০ মিনিট পর স্বয়ংক্রিয়ভাবে মুছে যাবে।*"
+        f"👋 Hello **{user_name}** 🌾,\n\n"
+        "**I AM LATEST ADVANCED AND POWERFUL MOVIE DOWNLOADING BOT.. YOU CAN USE ME TO DOWNLOAD YOUR MOVIES...**\n\n"
+        "👇 *Choose an option below or just type any movie name to search!*"
     )
-    sent_msg = await message.reply_text(start_text)
     
+    # Custom inline keyboard matching your design layout
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{client.me.username}?startgroup=true")],
+        [InlineKeyboardButton("✨ MOVIE GROUP", url="https://t.me/your_movie_group"), InlineKeyboardButton("✨ ABOUT", callback_data="about")],
+        [InlineKeyboardButton("✨ OWNER", url="https://t.me/your_owner_username")],
+        [InlineKeyboardButton("✨ JOIN UPDATE CHANNEL", url="https://t.me/your_update_channel")]
+    ])
+    
+    sent_msg = await message.reply_text(start_text, reply_markup=keyboard)
+    
+    # Auto-delete both the start message and the user's /start command after 10 minutes (600 seconds)
     asyncio.create_task(schedule_message_deletion(sent_msg, 600))
     asyncio.create_task(schedule_message_deletion(message, 600))
 
-# মুভি সার্চ এবং ফাইল পাঠানোর হ্যান্ডলার
+# Movie search and delivery handler
 @app.on_message(filters.text & ~filters.command(["start"]))
 async def movie_search_handler(client, message):
     query = message.text.strip()
@@ -62,7 +73,7 @@ async def movie_search_handler(client, message):
     results = search_movies_from_db(query)
     
     if not results:
-        sent_msg = await message.reply_text("❌ দুঃখিত, এই নামের কোনো মুভি আমাদের ডাটাবেজে পাওয়া যায়নি।")
+        sent_msg = await message.reply_text("❌ Sorry, no movies found matching this name in our database.")
         asyncio.create_task(schedule_message_deletion(sent_msg, 600))
         asyncio.create_task(schedule_message_deletion(message, 600))
         return
@@ -75,12 +86,18 @@ async def movie_search_handler(client, message):
                 message_id=msg_id
             )
             
-            # ১০ মিনিট (৬০০ সেকেন্ড) পর মুভি ফাইল এবং ইউজারের সার্চ টেক্সট ডিলিট হবে
+            # Automatically delete both the movie file and the user's search message after 10 minutes (600 seconds)
             asyncio.create_task(schedule_message_deletion(sent_msg, 600))
             asyncio.create_task(schedule_message_deletion(message, 600))
             
         except Exception as e:
             print(f"Error copying message: {e}")
 
-print("🤖 মুভি বট সফলভাবে চালু হয়েছে এবং ১০ মিনিটের অটো-ডিলিট সিস্টেম সক্রিয় আছে!")
+# Callback query handler for interactive buttons like 'ABOUT'
+@app.on_callback_query()
+async def callback_handler(client, callback_query):
+    if callback_query.data == "about":
+        await callback_query.answer("This is an advanced movie downloading bot with 10-minute auto-delete features.", show_alert=True)
+
+print("🤖 Movie Bot has successfully started with the 10-minute auto-delete system active!")
 app.run()
