@@ -1,221 +1,105 @@
 import os
-import logging
-import urllib.parse
-import html
 import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
-# Logging Setup
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Railway Environment Variables 
-TOKEN = os.getenv("TOKEN")
+# Railway বা পরিবেশ থেকে ভেরিয়েবলগুলো নেওয়া
+API_ID = int(os.getenv("API_ID", "12806494"))
+API_HASH = os.getenv("API_HASH", "e0e7832c9d7b4150b3e9940aa3a9ee8c")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "0"))
 
-def init_db():
+app = Client("kb_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ডাটাবেজ থেকে মুভি খোঁজার ফাংশন
+def search_movies_from_db(query):
     try:
-        with psycopg2.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS kb_movies_v2 (
-                        id SERIAL PRIMARY KEY,
-                        search_text TEXT,
-                        message_id INTEGER,
-                        channel_id BIGINT
-                    )
-                ''')
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # ডাটাবেজ থেকে ম্যাচিং মুভিগুলো খুঁজবে (সর্বোচ্চ ১০টি)
+        cur.execute(
+            "SELECT search_text, message_id, channel_id FROM kb_movies_v2 WHERE search_text ILIKE %s LIMIT 10",
+            (f"%{query}%",)
+        )
+        results = cur.fetchall()
+        cur.close()
+        conn.close()
+        return results
     except Exception as e:
-        logger.error(f"Database Initialization Error: {e}")
+        print(f"Database Search Error: {e}")
+        return []
 
-init_db()
-
-# ১০ মিনিট পর মেসেজ ডিলিট করার ফাংশন
-async def auto_delete_message(bot, chat_id, message_id, delay):
-    await asyncio.sleep(delay)
+# নির্দিষ্ট সময় পর মেসেজ স্বয়ংক্রিয়ভাবে ডিলিট করার ব্যাকগ্রাউন্ড ফাংশন (ডিফল্ট ১০ মিনিট বা ৬০০ সেকেন্ড)
+async def schedule_message_deletion(message, delay_seconds=600):
+    await asyncio.sleep(delay_seconds)
     try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"Message {message_id} auto-deleted after {delay} seconds.")
+        await message.delete()
     except Exception as e:
-        logger.error(f"Auto-delete Failed: {e}")
+        print(f"Auto-delete error: {e}")
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name
-    bot_user = context.bot.username  # আপনার বটের ইউজারনেম অটোমেটিক নিয়ে গ্রুপে অ্যাড করার লিংক তৈরি করবে
-    
-    # স্ক্রিনশটের মতো সাজানো বাটনগুলো (Inline Keyboards)
-    keyboard = [
-        [
-            InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{bot_user}?startgroup=true")
-        ],
-        [
-            InlineKeyboardButton("✨ MOVIE GROUP", url="https://t.me/loot_dells"), # এখানে আপনার মুভি গ্রুপের লিংক দিতে পারেন
-            InlineKeyboardButton("✨ ABOUT", callback_data="about_btn")
-        ],
-        [
-            InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService") # এখানে আপনার বা ওনারের লিংক
-        ],
-        [
-            InlineKeyboardButton("✨ JOIN UPDATE CHANNEL", url="https://t.me/KbBotService")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = (
-        f"👋 Hello **{html.escape(user_name)}** 👋,\n\n"
-        "**I AM LATEST ADVANCED AND POWERFUL MOVIE DOWNLOADING BOT.. YOU CAN USE ME TO DOWNLOAD YOUR MOVIES...**\n\n"
-        "👇 *Choose an option below or just type any movie name to search!*"
+# স্টার্ট মেনু এবং হোমপেজ হ্যান্ডলার
+@app.on_message(filters.command("start"))
+async def start_handler(client, message):
+    start_text = (
+        "👋 **স্বাগতম আমাদের মুভি বটে!**\n\n"
+        "আপনি এই বট থেকে খুব সহজেই আপনার পছন্দের মুভি খুঁজে পেতে পারেন। "
+        "নিচের অপশনগুলো থেকে আপনার প্রয়োজনীয় সেবা বেছে নিন:"
     )
     
-    # যদি স্টার্ট কমান্ড ইনবক্সে দেয়, তবে ছবি বা সুন্দর টেক্সট সহ হোমপেজ পাঠাবে
-    await update.message.reply_text(
-        text=welcome_text,
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-# এবাউট (About) বাটনে ক্লিক করলে যে তথ্য দেখাবে
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 মুভি সার্চ করুন", switch_inline_query_current_chat("")),
+         InlineKeyboardButton("ℹ️ আমাদের সম্পর্কে", callback_data="about")],
+        [InlineKeyboardButton("➕ গ্রুপে অ্যাড করুন", url=f"https://t.me/{client.me.username}?startgroup=true"),
+         InlineKeyboardButton("🆘 সাহায্য", callback_data="help")]
+    ])
     
-    if query.data == "about_btn":
-        about_text = (
-            "🤖 **About This Bot:**\n\n"
-            "This is an advanced Auto-Filter Movie Bot powered by KB Bot Service.\n"
-            "It helps you to find and download your favorite movies instantly with Terabox links!\n\n"
-            "🌟 *Maintained by KB Bot Service.*"
-        )
-        keyboard = [[InlineKeyboardButton("« Back to Home", callback_data="home_btn")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text=about_text, reply_markup=reply_markup, parse_mode="HTML")
+    sent_msg = await message.reply_text(start_text, reply_markup=keyboard)
     
-    elif query.data == "home_btn":
-        user_name = update.effective_user.first_name
-        bot_user = context.bot.username
-        
-        keyboard = [
-            [InlineKeyboardButton("➕ ADD ME TO YOUR GROUP", url=f"https://t.me/{bot_user}?startgroup=true")],
-            [InlineKeyboardButton("✨ MOVIE GROUP", url="https://t.me/loot_dells"), InlineKeyboardButton("✨ ABOUT", callback_data="about_btn")],
-            [InlineKeyboardButton("✨ OWNER", url="https://t.me/KbBotService")],
-            [InlineKeyboardButton("✨ JOIN UPDATE CHANNEL", url="https://t.me/KbBotService")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_text = (
-            f"👋 Hello **{html.escape(user_name)}** 👋,\n\n"
-            "**I AM LATEST ADVANCED AND POWERFUL MOVIE DOWNLOADING BOT.. YOU CAN USE ME TO DOWNLOAD YOUR MOVIES...**\n\n"
-            "👇 *Choose an option below or just type any movie name to search!*"
-        )
-        await query.edit_message_text(text=welcome_text, reply_markup=reply_markup, parse_mode="HTML")
+    # স্টার্ট মেসেজটি এবং ইউজারের কমান্ড মেসেজটিও ১০ মিনিট পর ডিলিট করতে চাইলে নিচের লাইনগুলো চালু রাখতে পারেন:
+    # asyncio.create_task(schedule_message_deletion(sent_msg, 600))
+    # asyncio.create_task(schedule_message_deletion(message, 600))
 
-async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post or update.effective_message
-    if not message:
+# ইনলাইন বা সাধারণ টেক্সট সার্চ হ্যান্ডলার (মুভি খোঁজার জন্য)
+@app.on_message(filters.text & ~filters.command(["start"]))
+async def movie_search_handler(client, message):
+    query = message.text.strip()
+    if len(query) < 2:
         return
 
-    if message.text or message.caption:
-        full_text = message.text or message.caption
-        msg_id = message.message_id
-        chat_id = message.chat_id
-
-        try:
-            with psycopg2.connect(DATABASE_URL) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO kb_movies_v2 (search_text, message_id, channel_id) VALUES (%s, %s, %s)",
-                        (full_text, msg_id, chat_id)
-                    )
-            logger.info(f"Exact Post saved successfully! (Message ID: {msg_id})")
-        except Exception as e:
-            logger.error(f"Database Save Error: {e}")
-
-async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
-    if not query or query.startswith("/"):
+    results = search_movies_from_db(query)
+    
+    if not results:
+        sent_msg = await message.reply_text("❌ দুঃখিত, এই নামের কোনো মুভি আমাদের ডাটাবেজে পাওয়া যায়নি।")
+        # ১০ মিনিট পর ইউজার ও বটের মেসেজ ডিলিট করার শিডিউল
+        asyncio.create_task(schedule_message_deletion(sent_msg, 600))
+        asyncio.create_task(schedule_message_deletion(message, 600))
         return
 
-    searching_msg = await update.message.reply_text("🔍 Searching for the movie...")
-
-    try:
-        with psycopg2.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT message_id, channel_id FROM kb_movies_v2 WHERE search_text ILIKE %s", (f"%{query}%",))
-                results = cur.fetchall()
-
+    for text, msg_id, channel_id in results:
         try:
-            await searching_msg.delete()
-        except:
-            pass
-
-        if results:
-            for msg_id, channel_id in results[:3]:  
-                try:
-                    sent_msg = await context.bot.copy_message(
-                        chat_id=update.effective_chat.id,
-                        from_chat_id=channel_id,
-                        message_id=msg_id
-                    )
-                    asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, sent_msg.message_id, 600))
-                except Exception as copy_err:
-                    logger.error(f"Copy Message Error: {copy_err}")
-            
-            warning_msg = await update.message.reply_text("⚠️ *This movie will be automatically deleted in 10 minutes!*", parse_mode="HTML")
-            asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, warning_msg.message_id, 600))
-
-        else:
-            encoded_query = urllib.parse.quote(query)
-            google_search_url = f"https://www.google.com/search?q={encoded_query}"
-            
-            keyboard = [[InlineKeyboardButton("🌐 Search on Google (Check Spelling)", url=google_search_url)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            not_found_msg = await update.message.reply_text(
-                f"❌ Sorry, no movie found matching **'{html.escape(query)}'** in our database.\n\n"
-                "Please check if the spelling is correct by clicking the button below:",
-                reply_markup=reply_markup,
-                parse_mode="HTML"
+            # চ্যানেল থেকে মুভিটি ইউজারের চ্যাটে ফরোয়ার্ড/কপি করে পাঠানো
+            sent_msg = await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=channel_id,
+                message_id=msg_id
             )
-            asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, not_found_msg.message_id, 120))
+            
+            # ⏰ নিখুঁতভাবে ১০ মিনিট (৬০০ সেকেন্ড) পর মুভি ফাইল এবং ইউজারের সার্চ মেসেজটি অটো-ডিলিট হবে
+            asyncio.create_task(schedule_message_deletion(sent_msg, 600))
+            asyncio.create_task(schedule_message_deletion(message, 600))
+            
+        except Exception as e:
+            print(f"Error copying message: {e}")
 
-    except Exception as e:
-        logger.error(f"Search Error: {e}")
-        try:
-            await searching_msg.delete()
-        except:
-            pass
-        
-        encoded_query = urllib.parse.quote(query)
-        google_search_url = f"https://www.google.com/search?q={encoded_query}"
-        
-        keyboard = [[InlineKeyboardButton("🌐 Search on Google", url=google_search_url)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+# কলব্যাক কুয়েরি (About & Help বাটন হ্যান্ডেল করার জন্য)
+@app.on_callback_query()
+async def callback_handler(client, callback_query):
+    data = callback_query.data
+    if data == "about":
+        await callback_query.answer("এই বটটি দিয়ে আপনি যেকোনো মুভি খুব সহজেই খুঁজে পেতে পারেন।", show_alert=True)
+    elif data == "help":
+        await callback_query.answer("মুভির নাম লিখে সেন্ড করলেই বট আপনাকে মুভি ফাইল দিয়ে দেবে।", show_alert=True)
 
-        error_msg = await update.message.reply_text(
-            f"⚠️ **System Error:** `{html.escape(str(e))}`\n\n"
-            "An internal error occurred. You can search for it on Google using the button below:",
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
-        asyncio.create_task(auto_delete_message(context.bot, update.effective_chat.id, error_msg.message_id, 120))
-
-def main():
-    application = ApplicationBuilder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CallbackQueryHandler(button_handler)) # বাটন ক্লিক হ্যান্ডেল করার জন্য
-    application.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID) & (filters.TEXT | filters.CAPTION), save_movie_to_db))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search_movie))
-
-    print("Movie Bot is running with Pro Homepage...")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+print("🤖 মুভি বট সফলভাবে চালু হয়েছে এবং অটো-ডিলিট সিস্টেম সক্রিয় আছে!")
+app.run()
