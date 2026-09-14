@@ -29,7 +29,7 @@ def search_movies_from_db(query):
         print(f"Database Search Error: {e}")
         return []
 
-# Background function to automatically delete messages after a specific delay (default 10 minutes or 600 seconds)
+# Background function to automatically delete messages after 10 minutes (600 seconds)
 async def schedule_message_deletion(message, delay_seconds=600):
     await asyncio.sleep(delay_seconds)
     try:
