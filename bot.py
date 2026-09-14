@@ -12,12 +12,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Railway Environment Variables or Configuration placeholders
-TOKEN = os.getenv("TOKEN", "YOUR_BOT_TOKEN_HERE")
-DATABASE_URL = os.getenv("DATABASE_URL", "YOUR_POSTGRES_DATABASE_URL_HERE")
-DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "-100xxxxxxxxxx"))  # Your private channel ID (with minus sign)
+# Railway Environment Variables থেকে ভ্যালুগুলো নেওয়া
+TOKEN = os.getenv("TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+# DB_CHANNEL_ID-কে সংখ্যায় (integer) রূপান্তর করা
+DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "0"))
 
-# Initialize PostgreSQL Database and Table
+# PostgreSQL ডাটাবেজ এবং টেবিল তৈরি করা
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
@@ -36,7 +37,7 @@ def init_db():
 init_db()
 
 async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Saves new movies uploaded to the private channel into the database automatically."""
+    """প্রাইভেট চ্যানেলে নতুন মুভি আপলোড হলে তা স্বয়ংক্রিয়ভাবে ডাটাবেজে সেভ করবে"""
     message = update.channel_post or update.effective_message
     if not message:
         return
@@ -61,7 +62,7 @@ async def save_movie_to_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Database Error: {e}")
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Searches for movies in the database when a user types a name in a group or PM."""
+    """গ্রুপে বা ইনবক্সে কেউ মুভির নাম লিখে সার্চ করলে তা ডাটাবেজ থেকে খুঁজে বের করবে"""
     query = update.message.text
     if query.startswith("/"):
         return
@@ -79,14 +80,14 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await searching_msg.delete()
 
         if results:
-            for file_id, file_name in results[:5]:  # Sends up to 5 matching files
+            for file_id, file_name in results[:5]:  # একসঙ্গে সর্বোচ্চ ৫টি ফাইল পাঠাবে
                 await context.bot.send_video(
                     chat_id=update.effective_chat.id,
                     video=file_id,
                     caption=f"🎬 **{file_name}**\n\n📥 Provided by Movie Bot"
                 )
         else:
-            # If movie is not found, generate a Google search link to check the spelling
+            # মুভি না পাওয়া গেলে গুগল সার্চের বাটন সহ মেসেজ পাঠাবে
             encoded_query = urllib.parse.quote(query)
             google_search_url = f"https://www.google.com/search?q={encoded_query}"
             
@@ -108,10 +109,13 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # 1. Handler to track new uploads in the private channel
-    application.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID) & (filters.VIDEO | filters.DOCUMENT | filters.AUDIO), save_movie_to_db))
+    # ১. প্রাইভেট চ্যানেলের নতুন ভিডিও বা ফাইল ট্র্যাক করার হ্যান্ডলার
+    application.add_handler(MessageHandler(
+        filters.Chat(DB_CHANNEL_ID) & (filters.VIDEO | filters.Document.ALL | filters.AUDIO), 
+        save_movie_to_db
+    ))
 
-    # 2. Handler to search movies in groups or private chat
+    # ২. গ্রুপ বা ইনবক্সে মুভি সার্চ করার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search_movie))
 
     print("Movie Bot is running...")
