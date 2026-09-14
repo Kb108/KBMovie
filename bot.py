@@ -1,6 +1,7 @@
 import os
 import asyncio
 import urllib.parse
+from difflib import SequenceMatcher
 
 import psycopg2
 from pyrogram import Client, filters
@@ -8,17 +9,15 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 # =========================================================
-# RAILWAY VARIABLES
+# ENVIRONMENT VARIABLES
 # =========================================================
 
 API_ID_RAW = (
     os.getenv("API_ID")
     or os.getenv("api_id")
     or os.getenv("App api_id")
-    or "0"
+    or ""
 )
-
-API_ID = int(API_ID_RAW) if str(API_ID_RAW).isdigit() else 0
 
 API_HASH = (
     os.getenv("API_HASH")
@@ -42,6 +41,41 @@ DATABASE_URL = (
 
 
 # =========================================================
+# VALIDATE API ID
+# =========================================================
+
+try:
+    API_ID = int(str(API_ID_RAW).strip())
+except (ValueError, TypeError):
+    API_ID = 0
+
+
+if API_ID <= 0:
+    raise RuntimeError(
+        "API_ID is missing or invalid. "
+        "Please check your Railway Variables."
+    )
+
+if not API_HASH:
+    raise RuntimeError(
+        "API_HASH is missing. "
+        "Please check your Railway Variables."
+    )
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN is missing. "
+        "Please check your Railway Variables."
+    )
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. "
+        "Please check your Railway Variables."
+    )
+
+
+# =========================================================
 # TELEGRAM CLIENT
 # =========================================================
 
@@ -58,37 +92,109 @@ app = Client(
 # =========================================================
 
 def search_movies_from_db(query):
-    conn = None
-    cur = None
+
+    connection = None
+    cursor = None
 
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
+        connection = psycopg2.connect(
+            DATABASE_URL,
+            connect_timeout=10
+        )
 
-        cur.execute(
+        cursor = connection.cursor()
+
+        cursor.execute(
             """
             SELECT search_text, message_id, channel_id
             FROM kb_movies_v2
             WHERE search_text ILIKE %s
-            LIMIT 10
+            LIMIT 20
             """,
             (f"%{query}%",)
         )
 
-        results = cur.fetchall()
+        return cursor.fetchall()
 
-        return results
-
-    except Exception as e:
-        print(f"Database Search Error: {e}")
+    except Exception as error:
+        print(f"Database Search Error: {error}")
         return []
 
     finally:
-        if cur:
-            cur.close()
+        if cursor:
+            cursor.close()
 
-        if conn:
-            conn.close()
+        if connection:
+            connection.close()
+
+
+# =========================================================
+# NORMALIZE TEXT
+# =========================================================
+
+def normalize_text(text):
+
+    text = str(text).lower().strip()
+
+    for character in [
+        "-", "_", ".", ",", ":", ";",
+        "!", "?", "(", ")", "[", "]"
+    ]:
+        text = text.replace(character, " ")
+
+    return " ".join(text.split())
+
+
+# =========================================================
+# FIND BEST MATCH
+# =========================================================
+
+def get_best_match(query, results):
+
+    if not results:
+        return None
+
+    query_normalized = normalize_text(query)
+
+    best_result = None
+    best_score = 0.0
+
+    for result in results:
+
+        search_text = result[0]
+
+        if not search_text:
+            continue
+
+        movie_normalized = normalize_text(search_text)
+
+        # Exact match
+        if movie_normalized == query_normalized:
+            return result
+
+        # Similarity match
+        score = SequenceMatcher(
+            None,
+            query_normalized,
+            movie_normalized
+        ).ratio()
+
+        # Partial match
+        if (
+            query_normalized in movie_normalized
+            or movie_normalized in query_normalized
+        ):
+            score = max(score, 0.80)
+
+        if score > best_score:
+            best_score = score
+            best_result = result
+
+    # Accept only a reasonably good match
+    if best_score >= 0.72:
+        return best_result
+
+    return None
 
 
 # =========================================================
@@ -103,8 +209,33 @@ async def delete_after_10_minutes(message):
         await message.delete()
         print("Message deleted after 10 minutes.")
 
-    except Exception as e:
-        print(f"Auto-delete error: {e}")
+    except Exception as error:
+        print(f"Auto-delete error: {error}")
+
+
+# =========================================================
+# GOOGLE SEARCH BUTTON
+# =========================================================
+
+def google_search_keyboard(query):
+
+    encoded_query = urllib.parse.quote_plus(
+        f"{query} movie"
+    )
+
+    google_url = (
+        "https://www.google.com/search?q="
+        + encoded_query
+    )
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔍 SEARCH ON GOOGLE",
+                url=google_url
+            )
+        ]
+    ])
 
 
 # =========================================================
@@ -114,92 +245,106 @@ async def delete_after_10_minutes(message):
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
 
-    user_name = (
-        message.from_user.first_name
-        if message.from_user
-        else "User"
-    )
+    try:
 
-    start_text = (
-        f"👋 Hello **{user_name}** 🌾\n\n"
+        me = await client.get_me()
 
-        "🎬 **KB Movie Bot**\n\n"
+        bot_username = me.username or ""
 
-        "🔎 **Type any movie name to search.**\n\n"
+        user_name = (
+            message.from_user.first_name
+            if message.from_user
+            else "User"
+        )
 
-        "👇 **Our Services**\n\n"
+        start_text = (
+            f"👋 Hello **{user_name}**!\n\n"
 
-        "🚀 **KB Bot Service**\n"
-        "🤖 Telegram Bot Service\n"
-        "🔗 https://t.me/KbBotService\n\n"
+            "🎬 **KB Movie Bot**\n\n"
 
-        "🛍️ **Loot Deals**\n"
-        "🔥 Shopping Mall | Best Deals & Offers\n"
-        "🔗 https://t.me/loot_dells\n\n"
+            "🔎 **Search for a movie by typing "
+            "its name below.**\n\n"
 
-        "📥 **KB Downloader**\n"
-        "⚡ Facebook & Instagram Video Downloader Bot\n"
-        "🔗 https://t.me/KBDownloader_bot"
-    )
+            "👇 **OUR SERVICES**\n\n"
 
-    keyboard = InlineKeyboardMarkup([
+            "🚀 **KB Bot Service**\n"
+            "🤖 Telegram Bot Service\n"
+            "🔗 https://t.me/KbBotService\n\n"
 
-        [
-            InlineKeyboardButton(
-                "➕ ADD ME TO YOUR GROUP",
-                url=f"https://t.me/{client.me.username}?startgroup=true"
-            )
-        ],
+            "🛍️ **Loot Deals**\n"
+            "🔥 Shopping Mall | Best Deals & Offers\n"
+            "🔗 https://t.me/loot_dells\n\n"
 
-        [
-            InlineKeyboardButton(
-                "🚀 KB Bot Service",
-                url="https://t.me/KbBotService"
-            ),
-            InlineKeyboardButton(
-                "🛍️ Loot Deals",
-                url="https://t.me/loot_dells"
-            )
-        ],
+            "📥 **KB Downloader**\n"
+            "⚡ Facebook & Instagram Video Downloader Bot\n"
+            "🔗 https://t.me/KBDownloader_bot"
+        )
 
-        [
-            InlineKeyboardButton(
-                "📥 KB Downloader",
-                url="https://t.me/KBDownloader_bot"
-            )
-        ],
+        keyboard = InlineKeyboardMarkup([
 
-        [
-            InlineKeyboardButton(
-                "✨ ABOUT",
-                callback_data="about"
-            ),
-            InlineKeyboardButton(
-                "👑 OWNER",
-                url="https://t.me/your_owner_username"
-            )
-        ]
-    ])
+            [
+                InlineKeyboardButton(
+                    "➕ ADD ME TO YOUR GROUP",
+                    url=(
+                        f"https://t.me/{bot_username}"
+                        "?startgroup=true"
+                    )
+                )
+            ],
 
-    sent_message = await message.reply_text(
-        start_text,
-        reply_markup=keyboard,
-        disable_web_page_preview=True
-    )
+            [
+                InlineKeyboardButton(
+                    "🚀 KB Bot Service",
+                    url="https://t.me/KbBotService"
+                ),
 
-    # Delete bot message after 10 minutes
-    asyncio.create_task(
-        delete_after_10_minutes(sent_message)
-    )
+                InlineKeyboardButton(
+                    "🛍️ Loot Deals",
+                    url="https://t.me/loot_dells"
+                )
+            ],
 
-    # Delete user's /start message after 10 minutes
-    asyncio.create_task(
-        delete_after_10_minutes(message)
-    )
+            [
+                InlineKeyboardButton(
+                    "📥 KB Downloader",
+                    url="https://t.me/KBDownloader_bot"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "✨ ABOUT",
+                    callback_data="about"
+                ),
+
+                InlineKeyboardButton(
+                    "👑 OWNER",
+                    url="https://t.me/KbBotService"
+                )
+            ]
+        ])
+
+        sent_message = await message.reply_text(
+            start_text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+
+        asyncio.create_task(
+            delete_after_10_minutes(sent_message)
+        )
+
+        asyncio.create_task(
+            delete_after_10_minutes(message)
+        )
+
+    except Exception as error:
+
+        print(f"Start Handler Error: {error}")
 
 
 # =========================================================
-# MOVIE / MEDIA SEARCH
+# MOVIE SEARCH
 # =========================================================
 
 @app.on_message(
@@ -212,49 +357,38 @@ async def movie_search_handler(client, message):
     if len(query) < 2:
         return
 
-    print(f"Searching: {query}")
+    print(f"Movie search: {query}")
 
     results = search_movies_from_db(query)
 
+    best_match = get_best_match(
+        query,
+        results
+    )
+
 
     # =====================================================
-    # NOT FOUND
+    # NO GOOD MATCH
     # =====================================================
 
-    if not results:
+    if best_match is None:
 
-        google_query = urllib.parse.quote_plus(
-            f"{query} movie"
-        )
-
-        google_url = (
-            f"https://www.google.com/search?q={google_query}"
-        )
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🔍 SEARCH ON GOOGLE",
-                    url=google_url
-                )
-            ]
-        ])
+        keyboard = google_search_keyboard(query)
 
         not_found_message = await message.reply_text(
             f"❌ **Movie Not Found**\n\n"
-            f"🔎 Searched: **{query}**\n\n"
-            "Please check the spelling and search on Google.",
-            reply_markup=keyboard
+            f"🔎 Search: **{query}**\n\n"
+            "Please check the spelling and try again.",
+            reply_markup=keyboard,
+            disable_web_page_preview=True
         )
 
-        # Delete Google message after 10 minutes
         asyncio.create_task(
             delete_after_10_minutes(
                 not_found_message
             )
         )
 
-        # Delete user's search message
         asyncio.create_task(
             delete_after_10_minutes(
                 message
@@ -265,55 +399,64 @@ async def movie_search_handler(client, message):
 
 
     # =====================================================
-    # FOUND
+    # GOOD MATCH FOUND
     # =====================================================
 
-    for search_text, message_id, channel_id in results:
+    search_text, message_id, channel_id = best_match
+
+    try:
+
+        movie_message = await client.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=int(channel_id),
+            message_id=int(message_id)
+        )
+
+        warning_message = await message.reply_text(
+            "⚠️ **This file will be automatically deleted "
+            "after 10 minutes.**\n\n"
+            "💾 **Please save or forward it before "
+            "it gets deleted!**"
+        )
+
+        # Delete the movie message after 10 minutes
+        asyncio.create_task(
+            delete_after_10_minutes(
+                movie_message
+            )
+        )
+
+        # Delete warning after 10 minutes
+        asyncio.create_task(
+            delete_after_10_minutes(
+                warning_message
+            )
+        )
+
+        # Delete user's search message after 10 minutes
+        asyncio.create_task(
+            delete_after_10_minutes(
+                message
+            )
+        )
+
+        print(
+            f"Movie sent successfully: {search_text}"
+        )
+
+    except Exception as error:
+
+        print(
+            f"Movie Copy Error: {error}"
+        )
 
         try:
-
-            # Copy authorized media from source channel
-            movie_message = await client.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=int(channel_id),
-                message_id=int(message_id)
+            await message.reply_text(
+                "❌ **Sorry, something went wrong "
+                "while sending the file.**"
             )
-
-            # Warning directly below the file
-            warning_message = await message.reply_text(
-                "⚠️ **This file will be automatically deleted "
-                "after 10 minutes.**\n\n"
-                "💾 **Please save or forward it before "
-                "it gets deleted!**"
-            )
-
-            # Delete media after 10 minutes
-            asyncio.create_task(
-                delete_after_10_minutes(
-                    movie_message
-                )
-            )
-
-            # Delete warning after 10 minutes
-            asyncio.create_task(
-                delete_after_10_minutes(
-                    warning_message
-                )
-            )
-
-            # Delete user's search message
-            asyncio.create_task(
-                delete_after_10_minutes(
-                    message
-                )
-            )
-
-        except Exception as e:
-
-            print(
-                f"Error copying message "
-                f"{message_id}: {e}"
-            )
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -327,7 +470,8 @@ async def about_handler(client, callback_query):
 
     await callback_query.answer(
         "🎬 KB Movie Bot\n\n"
-        "Search available media by typing its name.\n\n"
+        "Search available movies by typing "
+        "their name.\n\n"
         "🗑️ Files are automatically deleted "
         "after 10 minutes.",
         show_alert=True
@@ -335,13 +479,14 @@ async def about_handler(client, callback_query):
 
 
 # =========================================================
-# BOT START
+# START BOT
 # =========================================================
 
 print("==========================================")
 print("🤖 KB Movie Bot is starting...")
-print("🔎 Database search enabled")
-print("🗑️ 10-minute auto-delete enabled")
+print("🔎 Database search: ON")
+print("🔍 Google fallback: ON")
+print("🗑️ 10-minute auto-delete: ON")
 print("==========================================")
 
 app.run()
