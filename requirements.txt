@@ -1,2 +1,4 @@
-python-telegram-bot
+pyrogram
+tgcrypto
 psycopg2-binary
+nest_asyncio
