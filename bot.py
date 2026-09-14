@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 import asyncpg
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,11 +15,24 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
+
 db_pool = None
 
 
 async def init_database():
     global db_pool
+
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is missing")
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is missing")
 
     db_pool = await asyncpg.create_pool(DATABASE_URL)
 
@@ -32,6 +46,8 @@ async def init_database():
             )
         """)
 
+    logger.info("DATABASE CONNECTED")
+
 
 async def save_content(name, link):
     async with db_pool.acquire() as conn:
@@ -42,19 +58,22 @@ async def save_content(name, link):
             DO UPDATE SET link = EXCLUDED.link
         """, name, link)
 
+    logger.info("CONTENT SAVED: %s", name)
 
-async def find_content(query):
+
+async def search_content(query):
     async with db_pool.acquire() as conn:
         return await conn.fetch("""
-            SELECT name, link
+            SELECT id, name, link
             FROM content
             WHERE name ILIKE $1
             ORDER BY name
-            LIMIT 5
+            LIMIT 10
         """, f"%{query}%")
 
 
 async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     post = update.channel_post
 
     if not post:
@@ -62,9 +81,12 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = post.text or post.caption or ""
 
-    urls = re.findall(r"https?://\S+", text)
+    logger.info("CHANNEL POST RECEIVED: %s", text)
+
+    urls = re.findall(r"https?://[^\s]+", text)
 
     if not urls:
+        logger.warning("CHANNEL POST HAS NO URL")
         return
 
     link = urls[0].rstrip(".,)")
@@ -83,19 +105,32 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_content(name, link)
 
 
-async def group_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     query = update.message.text.strip()
 
-    if len(query) < 2:
+    if not query:
         return
 
-    results = await find_content(query)
+    logger.info(
+        "GROUP MESSAGE RECEIVED: chat=%s text=%s",
+        update.message.chat_id,
+        query,
+    )
+
+    results = await search_content(query)
 
     if not results:
+        logger.info("NO MATCH FOUND: %s", query)
         return
+
+    logger.info("MATCH FOUND: %s", query)
 
     for item in results:
 
@@ -108,25 +143,30 @@ async def group_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ])
 
-        sent = await update.message.reply_text(
+        sent_message = await update.message.reply_text(
             f"🎬 <b>{item['name']}</b>\n\n"
             f"📥 Click the button below to open the link.",
             parse_mode="HTML",
             reply_markup=keyboard
         )
 
-        # Automatically delete bot reply after 10 minutes
-        context.job_queue.run_once(
-            delete_bot_message,
-            600,
-            data={
-                "chat_id": sent.chat_id,
-                "message_id": sent.message_id
-            }
-        )
+        # Delete the bot reply after 10 minutes
+        if context.job_queue:
+
+            context.job_queue.run_once(
+                delete_message,
+                600,
+                data={
+                    "chat_id": sent_message.chat_id,
+                    "message_id": sent_message.message_id,
+                }
+            )
+
+        break
 
 
-async def delete_bot_message(context: ContextTypes.DEFAULT_TYPE):
+async def delete_message(context: ContextTypes.DEFAULT_TYPE):
+
     data = context.job.data
 
     try:
@@ -134,27 +174,48 @@ async def delete_bot_message(context: ContextTypes.DEFAULT_TYPE):
             chat_id=data["chat_id"],
             message_id=data["message_id"]
         )
-    except Exception:
-        pass
+
+        logger.info(
+            "MESSAGE DELETED: chat=%s message=%s",
+            data["chat_id"],
+            data["message_id"]
+        )
+
+    except Exception as e:
+        logger.error("DELETE ERROR: %s", e)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "👋 Welcome!\n\n"
-        "Send the content name in a group to search."
+        "Send a content name to search."
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "📖 How to use\n\n"
-        "Simply type the content name in the group.\n"
-        "If it is available, I will show the matching result."
+        "Simply send the content name.\n"
+        "If a matching result exists, I will show it."
+    )
+
+
+async def error_handler(update, context):
+
+    logger.error(
+        "BOT ERROR: %s",
+        context.error,
+        exc_info=True
     )
 
 
 async def post_init(application):
+
     await init_database()
+
+    logger.info("BOT STARTED SUCCESSFULLY")
 
 
 def main():
@@ -174,19 +235,25 @@ def main():
         CommandHandler("help", help_command)
     )
 
+    # Normal messages from groups/supergroups
     application.add_handler(
         MessageHandler(
-            filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
-            group_search
+            filters.ChatType.GROUPS
+            & filters.TEXT
+            & ~filters.COMMAND,
+            group_message
         )
     )
 
+    # New posts from channels
     application.add_handler(
         MessageHandler(
             filters.ChatType.CHANNEL,
             channel_post
         )
     )
+
+    application.add_error_handler(error_handler)
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
